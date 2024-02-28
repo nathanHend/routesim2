@@ -55,7 +55,7 @@ class Distance_Vector_Node(Node):
             # Set sequence number
             self.neighbor_seq_nums[neighbor] = seq_num
             self.neighbor_tables[neighbor] = neighbor_table
-            self._update_dv()
+            self._update_fast_dv(neighbor)
 
     # Return a neighbor, -1 if no path to destination
     def get_next_hop(self, destination):
@@ -113,4 +113,89 @@ class Distance_Vector_Node(Node):
             # Print dv
             # self.print_dv_table(self.str_id)
             self.send_to_neighbors(json.dumps([self.str_id, self.seq_num, new_dv]))
+            self.seq_num += 1
+
+    def _update_fast_dv(self, neighbor):
+        # Theoretically, we only need to modify anyone whose next step is the changed neighbor
+        # Or whose is better
+        # Loop through every entry in our DV,
+        # Always check if the updated neighbor's path is better
+        # Else, check if the next step is equal to our neighbor and the distance is longer
+        # Check the paths for all the other neighbors to see if something is better
+        # If none exist, delete path
+        delete_keys = []
+        updated = False
+        # Loop through our entries
+        for key, entry in self.our_table.items():
+            # Get the corresponding path
+            neighbor_entry = self.neighbor_tables[neighbor].get(key, None)
+            # Check if the next step is our neighbor
+            if entry['next_hop'] == neighbor:
+                # Check if the path exists or path is worse
+                if neighbor_entry is None or neighbor_entry['dist'] + self.outbound_links[neighbor] > entry['dist']:
+                    # We need to update our table
+                    updated = True
+                    delete = neighbor is None
+
+                    # Check if we did not delete that entry
+                    if neighbor_entry is not None:
+                        # Change the path
+                        entry['dist'] = neighbor_entry['dist'] + self.outbound_links[neighbor]
+                        entry['next_hop'] = neighbor
+                        entry['path'] = [neighbor] + neighbor_entry['path']
+
+                    # Check direct connection
+                    if key in self.outbound_links:
+                        if delete or self.outbound_links[key] < entry['dist']:
+                            # Change the path
+                            entry['dist'] = self.outbound_links[key]
+                            entry['next_hop'] = key
+                            entry['path'] = [key]
+
+                    # Loop through neighbors and try to find the best path for that key
+                    for n, table in self.neighbor_tables.items():
+                        if key in table.keys():
+                            if delete or table[key]['dist'] + self.outbound_links[n] < entry['dist']:
+                                # We no longer delete is
+                                delete = False
+                                # Change the path
+                                entry['dist'] = table[key]['dist'] + self.outbound_links[n]
+                                entry['next_hop'] = n
+                                entry['path'] = [n] + table[key]['path']
+                    if delete:
+                        delete_keys.append(key)
+                    continue
+
+            # Check if path exists
+            if neighbor_entry is None:
+                continue
+            # Check if neighbor path contains a loop
+            if self.str_id in neighbor_entry['path']:
+                continue
+            # Check if neighbor path is better
+            if neighbor_entry['dist'] + self.outbound_links[neighbor] < entry['dist']:
+                # Change the path
+                entry['dist'] = neighbor_entry['dist'] + self.outbound_links[neighbor]
+                entry['next_hop'] = neighbor
+                entry['path'] = [neighbor] + neighbor_entry['path']
+                # We changed something!
+                updated = True
+
+        # Delete pair that no longer exist
+        for key in delete_keys:
+            del self.our_table[key]
+
+        # Add pairs that don't exist in our table
+        for key, entry in self.neighbor_tables[neighbor].items():
+            if key not in self.our_table.keys():
+                self.our_table[key] = {
+                    'dst': key,
+                    'dist': entry['dist'] + self.outbound_links[neighbor],
+                    'next_hop': neighbor,
+                    'path': [neighbor] + entry['path']
+                }
+                updated = True
+
+        if updated:
+            self.send_to_neighbors(json.dumps([self.str_id, self.seq_num, self.our_table]))
             self.seq_num += 1
