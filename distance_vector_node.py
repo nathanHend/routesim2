@@ -1,27 +1,27 @@
-import copy
-
 from simulator.node import Node
 import json
 import sys
+import copy
 
 INF = sys.maxsize
-
-class DV_Entry:
-    def __init__(self, dest, dist, path, seq_num):
-        self.dest = dest
-        self.dist = dist
-        self.path = path
-        self.seq_num = seq_num  # I need to figure what to do for this
 
 
 class Distance_Vector_Node(Node):
     def __init__(self, id):
         super().__init__(id)
+        self.str_id = str(id)
+        self.seq_num = 0
         # Initialize neighbors and the forwarding table
-        self.forwarding_table = {}
-        self.forwarding_table[id] = DV_Entry(id, 0, [], 0)
-        self.neighbors_latency = {}
-        self.neighbors_latency[id] = 0
+        self.our_table = {
+            self.str_id: {'dst': self.str_id,
+            'dist': 0,
+            'next_hop': None,
+            'path': []}
+        }
+        self.neighbor_tables = {}
+        self.neighbor_seq_nums = {}
+        self.outbound_links = {self.str_id: 0}
+        # self.print_dv_table(self.str_id)
 
     # Return a string
     def __str__(self):
@@ -29,123 +29,92 @@ class Distance_Vector_Node(Node):
 
     # Fill in this function
     def link_has_been_updated(self, neighbor, latency):
-        send_update = False
-
+        neighbor = str(neighbor)
         # Check if the link was deleted (AKA latency == -1)
         if latency == -1:
-            # Check that the link did exist before
-            if neighbor not in self.neighbors_latency.keys():
-                # The link didn't exist
+            if neighbor not in self.outbound_links.keys():
                 return
-
-            # Delete the link
-            del self.neighbors_latency[neighbor]
-
-            # Change every path that used the link
-            for key, entry in self.forwarding_table.items():
-                if entry.dest == self.id:
-                    continue
-                # Check if first step is to neighbor
-                if entry.path[0] == neighbor:
-                    # Delete path
-                    entry.dist = INF
-                    entry.path = [None]
-                    send_update = True
-
+            del self.outbound_links[neighbor]
+            del self.neighbor_tables[neighbor]
         # We are changing the link dist!
+        elif latency != self.outbound_links.get(neighbor, -1):
+            self.outbound_links[neighbor] = latency
         else:
-            # Get change in latency
-            latency_diff = latency - self.neighbors_latency.get(neighbor, 0)
-            # Update neighbor latency
-            self.neighbors_latency[neighbor] = latency
-            # Check every path that uses the link and update it:
-            for key, entry in self.forwarding_table.items():
-                if entry.dest == self.id:
-                    continue
-                if entry.path[0] == neighbor:
-                    entry.dist += latency_diff
-                    send_update = True
-            # Check if the link is new
-            if neighbor not in self.forwarding_table:
-                self.forwarding_table[neighbor] = DV_Entry(neighbor, latency_diff, [neighbor], -1)
-                send_update = True
-            # Check all paths to neighbors and see if direct links are better
-            for dest, latency in self.neighbors_latency.items():
-                if latency < self.forwarding_table[dest].dist:
-                    self.forwarding_table[dest].dist = latency
-                    self.forwarding_table[dest].path = [dest]
-                    send_update = True
-
-        # Send updated DV
-        if send_update:
-            self._update_neighbors()
+            return
+        # Update the dv
+        self._update_dv()
 
     # Fill in this function
     def process_incoming_routing_message(self, m):
-        send_update = False
-        help_neighbor = False
-        neighbor_list = json.loads(m)
-        neighbor = neighbor_list[0]  # First entry will be neighbor ID
-        # Loop through every entry in the neighbor list
-        for lst in neighbor_list[1:]:
-            entry = DV_Entry(lst[0], lst[1], lst[2], lst[3])
-            # Check if they are trying to sell us us
-            if self.id == entry.dest:
-                continue
-            # Check if there is a loop
-            if self.id in entry.path:
-                continue
-            # Check if the entry is new
-            if entry.dest not in self.forwarding_table:
-                self.forwarding_table[entry.dest] = copy.copy(entry)
-                send_update = True
-            # Check we use the path
-            elif neighbor == self.forwarding_table[entry.dest].path[0]:
-                # Check if has been no change in the path
-                if entry.dist == self.forwarding_table[entry.dest].dist and entry.path == self.forwarding_table[entry.dest].path:
-                    continue
-                # There has been a change! Update it
-                self.forwarding_table[entry.dest] = entry
-                send_update = True
-            # Check if the entry is better than our current one
-            elif entry.dist < self.forwarding_table[entry.dest].dist:
-                self.forwarding_table[entry.dest] = entry
-                send_update = True
-            # Check if they need help
-            elif entry.dist > self.forwarding_table[entry.dest].dist + 2 * self.neighbors_latency.get(neighbor, INF // 2 - 1):
-                help_neighbor = True
-        # Check all paths to neighbors and see if direct links are better
-        for dest, latency in self.neighbors_latency.items():
-            if latency < self.forwarding_table[dest].dist:
-                self.forwarding_table[dest].dist = latency
-                self.forwarding_table[dest].path = [dest]
-                send_update = True
-        if send_update:
-            self._update_neighbors()
-        elif help_neighbor:
-            self._update_neighbor(neighbor)
+        neighbor, seq_num, neighbor_table = json.loads(m)
+        # Check if the sequence number is invalid
+        if seq_num > self.neighbor_seq_nums.get(neighbor, -1):
+            if neighbor not in self.outbound_links.keys():
+                print(f"We ({self.str_id}) could not find this neighbor", neighbor)
+                return
+            # Set sequence number
+            self.neighbor_seq_nums[neighbor] = seq_num
+            self.neighbor_tables[neighbor] = neighbor_table
+            self._update_dv()
 
     # Return a neighbor, -1 if no path to destination
     def get_next_hop(self, destination):
-        if self.forwarding_table.get(destination, INF) != INF:
-            return self.forwarding_table[destination].path[0]
+        destination = str(destination)
+        if destination in self.our_table.keys() and destination != str(self.id):
+            return int(self.our_table[destination]['next_hop'])
         return -1
 
-    def _update_neighbors(self):
-        for neighbor in self.neighbors_latency.keys():
-            self._update_neighbor(neighbor)
+    # Print our/neighbor DV table
+    def print_dv_table(self, dv_id):
+        print(f"DV Table for {dv_id}")
+        table = self.our_table if dv_id == self.str_id else self.neighbor_tables[dv_id]
+        for entry in table.values():
+            print(f"<{entry['dst']}, {entry['dist']}, {entry['next_hop']}, {entry['path']}>")
 
-    def _update_neighbor(self, neighbor):
-        # Get base list to send
-        latency = self.neighbors_latency.get(neighbor, -1)
-        if latency == -1:
-            return
-        obj = [self.id]
-        for key, value in self.forwarding_table.items():
-            if value.path != [None]:
-                obj.append([value.dest, value.dist + latency, [self.id] + value.path, -1])
-            else:
-                obj.append([value.dest, INF, [None], -1])
-        #print(json.dumps(obj))
-        self.send_to_neighbor(neighbor, json.dumps(obj))
+    def diff_dvs(self, dv1: dict, dv2: dict) -> bool:
+        if len(dv1) != len(dv2):
+            return True
 
+        for pair in dv1.items():
+            if pair not in dv2.items():
+                return True
+
+        return False
+
+    def _update_dv(self):
+        # New DV to compute
+        new_dv = {}
+        # Add local connections
+        for dst, lat in self.outbound_links.items():
+            new_dv[dst] = {
+                'dst': dst,
+                'dist': lat,
+                'next_hop': dst if lat > 0 else None,
+                'path': [dst] if lat > 0 else []
+            }
+
+        # Compute a new DV and check if there is a change
+        for n_id, table in self.neighbor_tables.items():
+            # Loop through each entry
+            for dst, entry in table.items():
+                new_dist = entry['dist'] + self.outbound_links[n_id]
+                # Check if path contains loop
+                if str(self.id) in entry['path']:
+                    continue
+                # Check if the path is better
+                if dst not in new_dv.keys() or new_dist < new_dv[dst]['dist']:
+                    # Add the new dest
+                    new_dv[dst] = {
+                        'dst': dst,
+                        'dist': new_dist,
+                        'next_hop': n_id,
+                        'path': [n_id] + entry['path']
+                    }
+        # Check if there has been a change
+        if self.diff_dvs(self.our_table, new_dv):
+            # Change our dv
+            self.our_table = new_dv
+            # Print dv
+            # self.print_dv_table(self.str_id)
+            self.send_to_neighbors(json.dumps([self.str_id, self.seq_num, new_dv]))
+            self.seq_num += 1
