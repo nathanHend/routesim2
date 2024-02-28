@@ -72,14 +72,10 @@ class Distance_Vector_Node(Node):
             print(f"<{entry['dst']}, {entry['dist']}, {entry['next_hop']}, {entry['path']}>")
 
     def diff_dvs(self, dv1: dict, dv2: dict) -> bool:
+        # Check easy case
         if len(dv1) != len(dv2):
             return True
-
-        for pair in dv1.items():
-            if pair not in dv2.items():
-                return True
-
-        return False
+        return dv1 != dv2
 
     def _update_dv(self):
         # New DV to compute
@@ -99,7 +95,7 @@ class Distance_Vector_Node(Node):
             for dst, entry in table.items():
                 new_dist = entry['dist'] + self.outbound_links[n_id]
                 # Check if path contains loop
-                if str(self.id) in entry['path']:
+                if self.str_id in entry['path']:
                     continue
                 # Check if the path is better
                 if dst not in new_dv.keys() or new_dist < new_dv[dst]['dist']:
