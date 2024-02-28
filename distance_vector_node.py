@@ -1,7 +1,6 @@
 from simulator.node import Node
 import json
 import sys
-import copy
 
 INF = sys.maxsize
 
@@ -13,7 +12,7 @@ class Distance_Vector_Node(Node):
         self.seq_num = 0
         # Initialize neighbors and the forwarding table
         self.our_table = {
-            self.str_id: {'dst': self.str_id,
+            self.str_id: {
             'dist': 0,
             'next_hop': None,
             'path': []}
@@ -30,6 +29,7 @@ class Distance_Vector_Node(Node):
     # Fill in this function
     def link_has_been_updated(self, neighbor, latency):
         neighbor = str(neighbor)
+        lat_diff = None
         # Check if the link was deleted (AKA latency == -1)
         if latency == -1:
             if neighbor not in self.outbound_links.keys():
@@ -38,11 +38,12 @@ class Distance_Vector_Node(Node):
             del self.neighbor_tables[neighbor]
         # We are changing the link dist!
         elif latency != self.outbound_links.get(neighbor, -1):
+            lat_diff = latency - self.outbound_links.get(neighbor, 0)
             self.outbound_links[neighbor] = latency
         else:
             return
         # Update the dv
-        self._update_dv()
+        self._update_fast_link(neighbor, lat_diff)
 
     # Fill in this function
     def process_incoming_routing_message(self, m):
@@ -54,6 +55,7 @@ class Distance_Vector_Node(Node):
                 return
             # Set sequence number
             self.neighbor_seq_nums[neighbor] = seq_num
+            # Copy neighbor table
             self.neighbor_tables[neighbor] = neighbor_table
             self._update_fast_dv(neighbor)
 
@@ -68,8 +70,8 @@ class Distance_Vector_Node(Node):
     def print_dv_table(self, dv_id):
         print(f"DV Table for {dv_id}")
         table = self.our_table if dv_id == self.str_id else self.neighbor_tables[dv_id]
-        for entry in table.values():
-            print(f"<{entry['dst']}, {entry['dist']}, {entry['next_hop']}, {entry['path']}>")
+        for dst, entry in table.items():
+            print(f"<{dst}, {entry['dist']}, {entry['next_hop']}, {entry['path']}>")
 
     def diff_dvs(self, dv1: dict, dv2: dict) -> bool:
         # Check easy case
@@ -83,7 +85,6 @@ class Distance_Vector_Node(Node):
         # Add local connections
         for dst, lat in self.outbound_links.items():
             new_dv[dst] = {
-                'dst': dst,
                 'dist': lat,
                 'next_hop': dst if lat > 0 else None,
                 'path': [dst] if lat > 0 else []
@@ -101,7 +102,6 @@ class Distance_Vector_Node(Node):
                 if dst not in new_dv.keys() or new_dist < new_dv[dst]['dist']:
                     # Add the new dest
                     new_dv[dst] = {
-                        'dst': dst,
                         'dist': new_dist,
                         'next_hop': n_id,
                         'path': [n_id] + entry['path']
@@ -189,12 +189,79 @@ class Distance_Vector_Node(Node):
         for key, entry in self.neighbor_tables[neighbor].items():
             if key not in self.our_table.keys():
                 self.our_table[key] = {
-                    'dst': key,
                     'dist': entry['dist'] + self.outbound_links[neighbor],
                     'next_hop': neighbor,
                     'path': [neighbor] + entry['path']
                 }
                 updated = True
+
+        if updated:
+            self.send_to_neighbors(json.dumps([self.str_id, self.seq_num, self.our_table]))
+            self.seq_num += 1
+
+    def _update_fast_link(self, neighbor, lat_diff):
+        # We should be able to loop through each entry in our table
+        # If the link has decreased:
+        #   We update every path that uses the link
+        #   We check if a path using the link is better
+        # If the link has increased or deleted:
+        #   We update every path that uses the link
+        #   Then we check if there is a better path not using the link
+
+        delete_keys = []
+        updated = False
+        # Loop through our table
+        for key, entry in self.our_table.items():
+            # Update the link
+            if entry['next_hop'] == neighbor:
+                updated = True
+                # If the link was not deleted, change the lat
+                if lat_diff is not None:
+                    entry['dist'] += lat_diff
+
+                # Check if link was deleted or increased
+                if lat_diff is None or lat_diff > 0:
+                    # We need to update our table
+                    delete = lat_diff is None
+
+                    # Loop through neighbors and try to find the best path for that key
+                    for n, table in self.neighbor_tables.items():
+                        if key in table.keys():
+                            if delete or table[key]['dist'] + self.outbound_links[n] < entry['dist']:
+                                # We no longer delete is
+                                delete = False
+                                # Change the path
+                                entry['dist'] = table[key]['dist'] + self.outbound_links[n]
+                                entry['next_hop'] = n
+                                entry['path'] = [n] + table[key]['path']
+                    if delete:
+                        delete_keys.append(key)
+                    continue
+            # Check for better links if we decreased lat
+            elif lat_diff is not None and lat_diff < 0:
+                # Check that the neighbor exists
+                if neighbor in self.neighbor_tables.keys():
+                    # Check if we have a better path
+                    if key in self.neighbor_tables[neighbor].keys():
+                        # Check if the path is better
+                        if self.outbound_links[neighbor] + self.neighbor_tables[neighbor][key]['dist'] < entry['dist']:
+                            # We updated our DV
+                            updated = True
+                            entry['dist'] = self.outbound_links[neighbor] + self.neighbor_tables[neighbor][key]['dist']
+                            entry['next_hop'] = neighbor
+                            entry['path'] = [neighbor] + self.neighbor_tables[neighbor][key]['path']
+
+        for key in delete_keys:
+            del self.our_table[key]
+
+        # Check if neighbor exists and we are adding a link
+        if neighbor not in self.our_table.keys() and lat_diff is not None:
+            updated = True
+            self.our_table[neighbor] = {
+                'dist': lat_diff,
+                'next_hop': neighbor,
+                'path': [neighbor]
+            }
 
         if updated:
             self.send_to_neighbors(json.dumps([self.str_id, self.seq_num, self.our_table]))
