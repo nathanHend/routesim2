@@ -44,7 +44,7 @@ class Distance_Vector_Node(Node):
         else:
             return
         # Update the dv
-        self._update_fast_link(neighbor, lat_diff)
+        self._update_dv()
 
     # Fill in this function
     def process_incoming_routing_message(self, m):
@@ -58,7 +58,7 @@ class Distance_Vector_Node(Node):
             self.neighbor_seq_nums[neighbor] = seq_num
             # Copy neighbor table
             self.neighbor_tables[neighbor] = neighbor_table
-            self._update_fast_dv(neighbor)
+            self._update_dv()
 
     # Return a neighbor, -1 if no path to destination
     def get_next_hop(self, destination):
@@ -136,35 +136,21 @@ class Distance_Vector_Node(Node):
         for key, entry in self.our_table.items():
             # Get the corresponding path
             neighbor_entry = self.neighbor_tables[neighbor].get(key, None)
-            # Check if the next step is our neighbor
-            if entry['next_hop'] == neighbor:
+            # Check if our path uses our neighbor
+            if neighbor in entry['path']:
                 # Path can either be the same or different or deleted
                 # They are the same if path and distance are the same
-                # Check if path has not been deleted
-                if neighbor_entry is not None:
-                    new_dist = neighbor_entry['dist'] + self.outbound_links[neighbor]
-                    delete = neighbor_entry is None
-                    # They have changed if:
-                    if entry['dist'] != new_dist or entry['next_hop'] != [neighbor] + neighbor_entry['path']:
-                        # We need to update
-                        updated = True
-                        # If the path contains us, we must delete
-                        if self.str_id in neighbor_entry['path']:
-                            delete = True
-                        else:
-                            # Change the path
-                            entry['dist'] = new_dist
-                            entry['next_hop'] = neighbor
-                            entry['path'] = [neighbor] + neighbor_entry['path']
-                            # If the path was better, we just continue
-                            if new_dist < entry['dist']:
-                                continue
-                # Now the path has either been deleted or is worse
-                # Either way, we search for a better path
+                # Check if path is not possible
+                if neighbor_entry is None or neighbor_entry['dist'] + self.outbound_links[entry['next_hop']] > entry['dist']:
+                    # We need to change something
+                    updated = True
+                    # Either the neighbor can no longer get to the destination or
+                    # the best case scenario path is not possible
+                    delete = True
 
-                # Check direct connection
-                if key in self.outbound_links:
-                    if delete or self.outbound_links[key] < entry['dist']:
+                    # If we need to delete it, first check if there is a better way
+                    # Check direct connection
+                    if key in self.outbound_links:
                         # We no longer delete is
                         delete = False
                         # Change the path
@@ -172,31 +158,40 @@ class Distance_Vector_Node(Node):
                         entry['next_hop'] = key
                         entry['path'] = [key]
 
-                # Loop through neighbors and try to find the best path for that key
-                for n, table in self.neighbor_tables.items():
-                    if key in table.keys():
-                        # Check that the path does not contain us
-                        if self.str_id in table[key]['path']:
-                            continue
-                        if delete or table[key]['dist'] + self.outbound_links[n] < entry['dist']:
-                            # We no longer delete is
-                            delete = False
-                            # Change the path
-                            entry['dist'] = table[key]['dist'] + self.outbound_links[n]
-                            entry['next_hop'] = n
-                            entry['path'] = [n] + table[key]['path']
-                if delete:
-                    delete_keys.append(key)
-                continue
+                    # Check our neighbor tables
+                    for n, table in self.neighbor_tables.items():
+                        if key in table.keys():
+                            # Check that the path does not contain us
+                            if self.str_id in table[key]['path']:
+                                continue
+                            # Check if our neighbor told us they can't get there
+                            # but old info says they can
+                            if neighbor_entry is None and neighbor in table[key]['path']:
+                                continue
+                            # Check if they use our neighbor as a shorter path but our neighbor
+                            # says they can't get there sooner
+                            if neighbor in table[key]['path'] and neighbor_entry['dist'] + self.outbound_links[entry['next_hop']] > table[key]['dist']:
+                                continue
+                            # I think we have covered all cases
+                            if delete or table[key]['dist'] + self.outbound_links[n] < entry['dist']:
+                                # We no longer delete is
+                                delete = False
+                                # Change the path
+                                entry['dist'] = table[key]['dist'] + self.outbound_links[n]
+                                entry['next_hop'] = n
+                                entry['path'] = [n] + table[key]['path']
+                    # Check if we still need to delete
+                    if delete:
+                        delete_keys.append(key)
 
             # Check if path exists
-            if neighbor_entry is None:
+            elif neighbor_entry is None:
                 continue
             # Check if neighbor path contains a loop
-            if self.str_id in neighbor_entry['path']:
+            elif self.str_id in neighbor_entry['path']:
                 continue
             # Check if neighbor path is better
-            if neighbor_entry['dist'] + self.outbound_links[neighbor] < entry['dist']:
+            elif neighbor_entry['dist'] + self.outbound_links[neighbor] < entry['dist']:
                 # Change the path
                 entry['dist'] = neighbor_entry['dist'] + self.outbound_links[neighbor]
                 entry['next_hop'] = neighbor
