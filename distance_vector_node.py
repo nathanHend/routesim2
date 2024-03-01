@@ -58,7 +58,7 @@ class Distance_Vector_Node(Node):
             self.neighbor_seq_nums[neighbor] = seq_num
             # Copy neighbor table
             self.neighbor_tables[neighbor] = neighbor_table
-            self._update_dv()
+            self._update_fast_dv(neighbor)
 
     # Return a neighbor, -1 if no path to destination
     def get_next_hop(self, destination):
@@ -129,19 +129,20 @@ class Distance_Vector_Node(Node):
         # If none exist, delete path
         delete_keys = []
         updated = False
-        self.print_dv_table(self.str_id)
-        self.print_dv_table(neighbor)
-        print()
+        #self.print_dv_table(self.str_id)
+        #self.print_dv_table(neighbor)
+        #print()
         # Loop through our entries
         for key, entry in self.our_table.items():
             # Get the corresponding path
             neighbor_entry = self.neighbor_tables[neighbor].get(key, None)
             # Check if our path uses our neighbor
-            if neighbor in entry['path']:
+            # Assume goodwill
+            if neighbor == entry['next_hop']:
                 # Path can either be the same or different or deleted
                 # They are the same if path and distance are the same
                 # Check if path is not possible
-                if neighbor_entry is None or neighbor_entry['dist'] + self.outbound_links[entry['next_hop']] > entry['dist']:
+                if neighbor_entry is None or neighbor_entry['dist'] + self.outbound_links[neighbor] > entry['dist']:
                     # We need to change something
                     updated = True
                     # Either the neighbor can no longer get to the destination or
@@ -170,7 +171,7 @@ class Distance_Vector_Node(Node):
                                 continue
                             # Check if they use our neighbor as a shorter path but our neighbor
                             # says they can't get there sooner
-                            if neighbor in table[key]['path'] and neighbor_entry['dist'] + self.outbound_links[entry['next_hop']] > table[key]['dist']:
+                            if neighbor in table[key]['path'] and neighbor_entry['dist'] + self.outbound_links[neighbor] > table[key]['dist']:
                                 continue
                             # I think we have covered all cases
                             if delete or table[key]['dist'] + self.outbound_links[n] < entry['dist']:
@@ -185,13 +186,13 @@ class Distance_Vector_Node(Node):
                         delete_keys.append(key)
 
             # Check if path exists
-            elif neighbor_entry is None:
+            if neighbor_entry is None:
                 continue
             # Check if neighbor path contains a loop
-            elif self.str_id in neighbor_entry['path']:
+            if self.str_id in neighbor_entry['path']:
                 continue
             # Check if neighbor path is better
-            elif neighbor_entry['dist'] + self.outbound_links[neighbor] < entry['dist']:
+            if neighbor_entry['dist'] + self.outbound_links[neighbor] < entry['dist']:
                 # Change the path
                 entry['dist'] = neighbor_entry['dist'] + self.outbound_links[neighbor]
                 entry['next_hop'] = neighbor
@@ -216,8 +217,8 @@ class Distance_Vector_Node(Node):
         for key in delete_keys:
             del self.our_table[key]
 
-        self.print_dv_table(self.str_id)
-        print("\n")
+        #self.print_dv_table(self.str_id)
+        #print("\n")
         if updated:
             self.send_to_neighbors(json.dumps([self.str_id, self.seq_num, self.our_table]))
             self.seq_num += 1
