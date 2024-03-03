@@ -30,7 +30,7 @@ class Distance_Vector_Node(Node):
     def link_has_been_updated(self, neighbor, latency):
         neighbor = str(neighbor)
         lat_diff = None
-        print(f"Link from {self.str_id} to {neighbor} is now {latency}")
+        # print(f"Link from {self.str_id} to {neighbor} is now {latency}")
         # Check if the link was deleted (AKA latency == -1)
         if latency == -1:
             if neighbor not in self.outbound_links.keys():
